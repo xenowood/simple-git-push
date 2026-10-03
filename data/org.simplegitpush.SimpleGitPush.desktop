@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Simple Git Push
+GenericName=Git push helper
+Comment=Unpack a zip, commit, push and create a GitHub release
+Exec=simple-git-push %f
+Icon=simple-git-push
+Terminal=false
+Categories=Development;RevisionControl;GTK;
+Keywords=git;github;push;commit;release;zip;
+MimeType=application/zip;
+StartupNotify=true
+StartupWMClass=org.simplegitpush.SimpleGitPush

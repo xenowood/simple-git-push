@@ -1,0 +1,301 @@
+"""Tests for the GUI-free core. Run: python3 -m unittest discover -s tests -v"""
+import os
+import stat
+import subprocess
+import sys
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from simple_git_push import core  # noqa: E402
+
+
+def make_zip(path: Path, files: dict, prefix: str = "") -> Path:
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, data in files.items():
+            zi = zipfile.ZipInfo(prefix + name)
+            zi.external_attr = (0o755 if name.endswith(".sh") else 0o644) << 16
+            zf.writestr(zi, data)
+    return path
+
+
+SAMPLE = {
+    "README.md": "# Simple Git Push - GTK tool\n\nHello\n",
+    "RELEASE_NOTES.md": "## v1.0.1\n- fixes\n",
+    "LICENSE": "MIT",
+    "build.sh": "#!/bin/sh\n",
+    "src/app.py": "print('hi')\n",
+    "dist/simple-git-push_1.0.1_all.deb": "deb-bytes",
+}
+
+
+class Logger:
+    def __init__(self):
+        self.lines = []
+
+    def __call__(self, kind, text):
+        self.lines.append((kind, text))
+
+    def text(self):
+        return "\n".join(t for _, t in self.lines)
+
+
+class ZipTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def test_analyze_flat_zip(self):
+        z = make_zip(self.tmp / "files.zip", SAMPLE)
+        info = core.analyze_zip(z)
+        self.assertEqual(info.version, "1.0.1")
+        self.assertEqual(info.tag, "v1.0.1")
+        self.assertEqual(info.title, "Simple Git Push v1.0.1")
+        self.assertEqual(info.notes_file, "RELEASE_NOTES.md")
+        self.assertEqual(info.asset, "dist/simple-git-push_1.0.1_all.deb")
+        self.assertEqual(info.file_count, 6)
+
+    def test_strips_single_top_folder_and_junk(self):
+        data = dict(SAMPLE)
+        data["__MACOSX/._x"] = "junk"
+        z = make_zip(self.tmp / "p-v2.3.0.zip", data, prefix="proj/")
+        info = core.analyze_zip(z)
+        self.assertEqual(info.stripped_prefix, "proj")
+        self.assertIn("src/app.py", [e.rel for e in info.entries])
+        self.assertFalse(any("MACOSX" in e.rel for e in info.entries))
+
+    def test_version_file_wins(self):
+        data = dict(SAMPLE)
+        data["VERSION"] = "3.4.5\n"
+        info = core.analyze_zip(make_zip(self.tmp / "x.zip", data))
+        self.assertEqual(info.version, "3.4.5")
+
+    def test_version_from_zip_name(self):
+        z = make_zip(self.tmp / "tool-v0.9.2-beta.zip", {"a.txt": "x"})
+        self.assertEqual(core.analyze_zip(z).version, "0.9.2-beta")
+
+    def test_rejects_zip_slip(self):
+        z = self.tmp / "evil.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("../evil.txt", "x")
+        with self.assertRaises(core.ZipError):
+            core.analyze_zip(z)
+
+    def test_bad_zip(self):
+        p = self.tmp / "no.zip"
+        p.write_text("not a zip")
+        with self.assertRaises(core.ZipError):
+            core.analyze_zip(p)
+
+    def test_unpack_conflicts_and_modes(self):
+        info = core.analyze_zip(make_zip(self.tmp / "f.zip", SAMPLE))
+        dev = self.tmp / "dev"
+        conflicts, same = core.plan_unpack(info, dev)
+        self.assertEqual((conflicts, same), ([], 0))
+        written, _ = core.unpack(info, dev, True)
+        self.assertEqual(written, 6)
+        self.assertTrue(os.access(dev / "build.sh", os.X_OK))
+        # identical files are not conflicts
+        self.assertEqual(core.plan_unpack(info, dev), ([], 6))
+        # change one file -> exactly one conflict
+        (dev / "LICENSE").write_text("changed")
+        conflicts, same = core.plan_unpack(info, dev)
+        self.assertEqual(conflicts, ["LICENSE"])
+        self.assertEqual(same, 5)
+        # keep existing
+        w, s = core.unpack(info, dev, False)
+        self.assertEqual((dev / "LICENSE").read_text(), "changed")
+        self.assertEqual(w, 0)
+        # replace
+        core.unpack(info, dev, True)
+        self.assertEqual((dev / "LICENSE").read_text(), "MIT")
+
+    def test_file_where_dir_expected(self):
+        info = core.analyze_zip(make_zip(self.tmp / "f.zip", SAMPLE))
+        dev = self.tmp / "dev"
+        dev.mkdir()
+        (dev / "src").write_text("i am a file")
+        conflicts, _ = core.plan_unpack(info, dev)
+        self.assertIn("src", conflicts)
+        core.unpack(info, dev, False)
+        self.assertTrue((dev / "src").is_file())  # kept
+        core.unpack(info, dev, True)
+        self.assertTrue((dev / "src" / "app.py").is_file())
+
+
+class ProjectTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.old = core.SETTINGS_PATH
+        core.SETTINGS_PATH = self.tmp / "cfg" / "settings.json"
+
+    def tearDown(self):
+        core.SETTINGS_PATH = self.old
+
+    def test_default_when_empty(self):
+        projects, idx = core.load_projects()
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(idx, 0)
+        self.assertEqual(projects[0]["name"], "simple-git-push")
+
+    def test_roundtrip_and_last_project(self):
+        a = core.new_project(name="alpha", dev_folder="~/a", repo="https://github.com/x/alpha")
+        b = core.new_project(name="beta", dev_folder="~/b", repo="https://github.com/x/beta",
+                             commit_type="beta-release", push=False)
+        core.save_projects([a, b], 1)
+        projects, idx = core.load_projects()
+        self.assertEqual([p["name"] for p in projects], ["alpha", "beta"])
+        self.assertEqual(idx, 1)
+        self.assertEqual(projects[1]["commit_type"], "beta-release")
+        self.assertFalse(projects[1]["push"])
+
+    def test_migrates_v1_settings(self):
+        core.save_settings({"dev_folder": "~/Devel/old", "repo": "https://github.com/x/oldrepo",
+                            "commit_type": "beta-release", "push": False})
+        projects, idx = core.load_projects()
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(projects[0]["name"], "oldrepo")
+        self.assertEqual(projects[0]["dev_folder"], "~/Devel/old")
+        self.assertEqual(projects[0]["commit_type"], "beta-release")
+
+    def test_unique_names_and_bad_data(self):
+        core.save_settings({"projects": [{"name": "p"}, {"name": "p"}, "junk", {"name": "q", "bogus": 1}]})
+        projects, _ = core.load_projects()
+        self.assertEqual([p["name"] for p in projects], ["p", "p (2)", "q"])
+        self.assertNotIn("bogus", projects[2])
+
+    def test_corrupt_file(self):
+        core.SETTINGS_PATH.parent.mkdir(parents=True)
+        core.SETTINGS_PATH.write_text("{not json")
+        projects, idx = core.load_projects()
+        self.assertEqual((len(projects), idx), (1, 0))
+
+
+class HelperTests(unittest.TestCase):
+    def test_message(self):
+        self.assertEqual(core.build_message("1.0.1", "stable-release"), "v1.0.1: stable-release")
+        self.assertEqual(core.build_message("1.0.1", "beta-release"), "v1.0.1: beta-release")
+        self.assertEqual(core.build_message("1.0.1", "custom", " hi "), "hi")
+
+    def test_parse_repo(self):
+        self.assertEqual(core.parse_github_repo("https://github.com/test/testrepo"), "test/testrepo")
+        self.assertEqual(core.parse_github_repo("https://github.com/test/testrepo.git"), "test/testrepo")
+        self.assertEqual(core.parse_github_repo("git@github.com:a/b.git"), "a/b")
+        self.assertIsNone(core.parse_github_repo("https://example.com/a/b"))
+
+
+def git(cwd, *args):
+    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+
+class GitFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.remote = self.tmp / "remote.git"
+        subprocess.run(["git", "init", "--bare", "-b", "main", str(self.remote)], check=True,
+                       capture_output=True)
+        self.dev = self.tmp / "dev"
+        info = core.analyze_zip(make_zip(self.tmp / "f.zip", SAMPLE))
+        core.unpack(info, self.dev, True)
+        os.environ.update(GIT_AUTHOR_NAME="T", GIT_AUTHOR_EMAIL="t@e.x",
+                          GIT_COMMITTER_NAME="T", GIT_COMMITTER_EMAIL="t@e.x")
+
+    def test_commit_push_excludes_deb(self):
+        log = Logger()
+        ok = core.commit_and_push(core.Runner(log), self.dev, str(self.remote),
+                                  "v1.0.1: stable-release", True, True)
+        self.assertTrue(ok, log.text())
+        self.assertEqual(git(self.remote, "log", "-1", "--format=%s").strip(), "v1.0.1: stable-release")
+        files = git(self.remote, "ls-tree", "-r", "--name-only", "main")
+        self.assertIn("src/app.py", files)
+        self.assertNotIn(".deb", files)
+        # second run: nothing to commit, still succeeds
+        log2 = Logger()
+        self.assertTrue(core.commit_and_push(core.Runner(log2), self.dev, str(self.remote),
+                                             "again", True, True), log2.text())
+        self.assertIn("Nothing new to commit", log2.text())
+
+    def test_no_push(self):
+        log = Logger()
+        self.assertTrue(core.commit_and_push(core.Runner(log), self.dev, str(self.remote),
+                                             "m", False, True), log.text())
+        self.assertEqual(git(self.remote, "branch", "--list").strip(), "")
+
+    def test_deb_included_when_not_excluded(self):
+        log = Logger()
+        core.commit_and_push(core.Runner(log), self.dev, str(self.remote), "m", True, False)
+        self.assertIn(".deb", git(self.remote, "ls-tree", "-r", "--name-only", "main"))
+
+    def test_empty_message_fails(self):
+        log = Logger()
+        self.assertFalse(core.commit_and_push(core.Runner(log), self.dev, "x", " ", True))
+
+    def test_remote_url_is_corrected(self):
+        git(self.dev, "init", "-b", "main")
+        git(self.dev, "remote", "add", "origin", "https://old.example/x.git")
+        log = Logger()
+        core.commit_and_push(core.Runner(log), self.dev, str(self.remote), "m", True, True)
+        self.assertEqual(git(self.dev, "remote", "get-url", "origin").strip(), str(self.remote))
+
+
+class ReleaseTests(unittest.TestCase):
+    """Uses a fake `gh` that records its arguments."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        self.calls = self.tmp / "calls.txt"
+        self.exists = self.tmp / "exists"
+        gh = self.bin / "gh"
+        gh.write_text(
+            "#!/bin/sh\n"
+            f'echo "$@" >> {self.calls}\n'
+            'if [ "$1 $2" = "release view" ]; then [ -f ' + str(self.exists) + ' ] && exit 0 || exit 1; fi\n'
+            "exit 0\n")
+        gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
+        self.old_path = os.environ["PATH"]
+        os.environ["PATH"] = f"{self.bin}:{self.old_path}"
+        self.dev = self.tmp / "dev"
+        core.unpack(core.analyze_zip(make_zip(self.tmp / "f.zip", SAMPLE)), self.dev, True)
+
+    def tearDown(self):
+        os.environ["PATH"] = self.old_path
+
+    def release(self, **kw):
+        log = Logger()
+        args = dict(dev=self.dev, repo="https://github.com/test/testrepo", tag="v1.0.1",
+                    title="Simple Git Push v1.0.1", notes_file="RELEASE_NOTES.md",
+                    asset="dist/simple-git-push_1.0.1_all.deb")
+        args.update(kw)
+        return core.create_release(core.Runner(log), **args), log
+
+    def test_creates_release(self):
+        ok, log = self.release(prerelease=True)
+        self.assertTrue(ok, log.text())
+        last = self.calls.read_text().strip().splitlines()[-1]
+        self.assertTrue(last.startswith("release create v1.0.1 "))
+        for part in ("--repo test/testrepo", "--title Simple Git Push v1.0.1",
+                     "--notes-file", "RELEASE_NOTES.md", ".deb", "--prerelease"):
+            self.assertIn(part, last)
+
+    def test_existing_release_needs_overwrite(self):
+        self.exists.write_text("1")
+        ok, log = self.release()
+        self.assertFalse(ok)
+        self.assertIn("already exists", log.text())
+        ok, log = self.release(overwrite=True)
+        self.assertTrue(ok, log.text())
+        calls = self.calls.read_text()
+        self.assertIn("release delete v1.0.1", calls)
+        self.assertIn("--cleanup-tag", calls)
+
+    def test_missing_files_and_bad_repo(self):
+        self.assertFalse(self.release(asset="nope.deb")[0])
+        self.assertFalse(self.release(notes_file="nope.md")[0])
+        self.assertFalse(self.release(repo="https://example.com/a/b")[0])
+
+
+if __name__ == "__main__":
+    unittest.main()
