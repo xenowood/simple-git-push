@@ -14,7 +14,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
-from . import APP_ID, APP_NAME, __version__, core  # noqa: E402
+from . import APP_ID, APP_NAME, COPYRIGHT, ISSUES_URL, REPO_URL, __version__, core  # noqa: E402
 
 CSS = """
 .dropzone { border: 2px dashed alpha(currentColor, 0.35); border-radius: 12px; padding: 18px; }
@@ -102,6 +102,10 @@ class MainWindow(Adw.ApplicationWindow):
         self.toasts = Adw.ToastOverlay()
         view = Adw.ToolbarView()
         header = Adw.HeaderBar()
+        about = Gtk.Button(icon_name="help-about-symbolic", tooltip_text="About Simple Git Push")
+        about.add_css_class("flat")
+        about.connect("clicked", lambda *_: self.show_about())
+        header.pack_end(about)
         self.spinner = Gtk.Spinner()
         header.pack_end(self.spinner)
         view.add_top_bar(header)
@@ -144,8 +148,12 @@ class MainWindow(Adw.ApplicationWindow):
         open_btn.connect("clicked", lambda *_: self.choose_zip())
         self.unpack_btn = Gtk.Button(label="Unpack again")
         self.unpack_btn.connect("clicked", lambda *_: self.unpack_current())
+        self.clear_btn = Gtk.Button(label="Clear", icon_name="edit-clear-all-symbolic",
+                                    tooltip_text="Remove the loaded zip and clear the commit and release fields")
+        self.clear_btn.connect("clicked", lambda *_: self.clear_zip())
         buttons.append(open_btn)
         buttons.append(self.unpack_btn)
+        buttons.append(self.clear_btn)
         for w in (icon, title, self.zip_status, buttons):
             box.append(w)
 
@@ -157,18 +165,22 @@ class MainWindow(Adw.ApplicationWindow):
         return box
 
     def _build_project(self) -> Gtk.Widget:
-        g = Adw.PreferencesGroup(title="Project",
-                                 description="Pick a saved project. Changes are stored automatically.")
+        g = Adw.PreferencesGroup(title="Project")
+        self.project_group = g
         self.project_row = Adw.ComboRow(title="Project", model=Gtk.StringList.new([]))
         add = Gtk.Button(icon_name="list-add-symbolic", valign=Gtk.Align.CENTER,
                          tooltip_text="Add a new project")
         add.add_css_class("flat")
         add.connect("clicked", lambda *_: self.add_project())
+        self.edit_btn = Gtk.Button(icon_name="document-edit-symbolic", valign=Gtk.Align.CENTER)
+        self.edit_btn.add_css_class("flat")
+        self.edit_btn.connect("clicked", lambda *_: self.toggle_edit())
         self.del_btn = Gtk.Button(icon_name="user-trash-symbolic", valign=Gtk.Align.CENTER,
                                   tooltip_text="Delete this project")
         self.del_btn.add_css_class("flat")
         self.del_btn.connect("clicked", lambda *_: self.delete_project())
         self.project_row.add_suffix(add)
+        self.project_row.add_suffix(self.edit_btn)
         self.project_row.add_suffix(self.del_btn)
         self.name_row = Adw.EntryRow(title="Project name")
         self.name_row.connect("changed", lambda *_: self._on_name_changed())
@@ -177,13 +189,43 @@ class MainWindow(Adw.ApplicationWindow):
                           tooltip_text="Choose a folder")
         pick.add_css_class("flat")
         pick.connect("clicked", lambda *_: self.choose_folder())
+        self.pick_btn = pick
         self.dev_row.add_suffix(pick)
         self.repo_row = Adw.EntryRow(title="Repository URL")
         g.add(self.project_row)
         g.add(self.name_row)
         g.add(self.dev_row)
         g.add(self.repo_row)
+        self.set_editing(False)
         return g
+
+    def set_editing(self, on: bool) -> None:
+        """Project name, folder and repository are locked unless the pencil was pressed."""
+        self.editing = on
+        for row in (self.name_row, self.dev_row, self.repo_row):
+            row.set_editable(on)
+        self.pick_btn.set_sensitive(on)
+        if on:
+            self.edit_btn.set_icon_name("object-select-symbolic")
+            self.edit_btn.set_tooltip_text("Save and lock this project")
+            self.edit_btn.add_css_class("suggested-action")
+            self.edit_btn.remove_css_class("flat")
+            self.project_group.set_description("Editing. Press the check mark to save and lock the project.")
+        else:
+            self.edit_btn.set_icon_name("document-edit-symbolic")
+            self.edit_btn.set_tooltip_text("Edit this project")
+            self.edit_btn.add_css_class("flat")
+            self.edit_btn.remove_css_class("suggested-action")
+            self.project_group.set_description("Locked. Press the pencil to change the project.")
+
+    def toggle_edit(self) -> None:
+        if self.editing:
+            self._capture()
+            self.set_editing(False)
+            self.toast("Project saved")
+        else:
+            self.set_editing(True)
+            self.name_row.grab_focus()
 
     def _build_commit(self) -> Gtk.Widget:
         g = Adw.PreferencesGroup(title="Commit and push")
@@ -304,6 +346,7 @@ class MainWindow(Adw.ApplicationWindow):
         if new == Gtk.INVALID_LIST_POSITION or new == self.current:
             return
         self._capture()
+        self.set_editing(False)
         self.current = new
         core.save_projects(self.projects, self.current)
         self._show_project()
@@ -335,6 +378,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._loading = False
         core.save_projects(self.projects, self.current)
         self._show_project()
+        self.set_editing(True)
         self.name_row.grab_focus()
 
     def delete_project(self) -> None:
@@ -361,6 +405,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.project_row.set_selected(self.current)
             self._loading = False
             core.save_projects(self.projects, self.current)
+            self.set_editing(False)
             self._show_project()
             self.log("info", f"Deleted project {name}")
         dialog.connect("response", answered)
@@ -507,6 +552,35 @@ class MainWindow(Adw.ApplicationWindow):
         self.unpack_current()
         return False
 
+    def clear_zip(self) -> None:
+        """Forget the loaded zip and empty the commit and release fields. Files on disk stay as they are."""
+        self.info = None
+        self.zip_status.set_text("No zip loaded yet")
+        if self._ctype() == "custom":
+            self.msg_row.set_text("")
+        else:
+            self._refresh_message()
+        for row in (self.tag_row, self.title_row, self.notes_row, self.asset_row):
+            row.set_auto("", force=True)
+        self.pre_row.set_active(False)
+        self.over_row.set_active(False)
+        self.log("info", "Cleared the loaded zip and the commit and release fields.")
+
+    def show_about(self) -> None:
+        dialog = Adw.AboutDialog(
+            application_name=APP_NAME,
+            application_icon="simple-git-push",
+            version=__version__,
+            developer_name="Simple Git Push contributors",
+            comments="Unpack a zip, commit, push and create a GitHub release from one window.",
+            website=REPO_URL,
+            issue_url=ISSUES_URL,
+            license_type=Gtk.License.MIT_X11,
+            copyright=COPYRIGHT,
+        )
+        dialog.add_acknowledgement_section("Made with", ["Claude (claude.ai)"])
+        dialog.present(self)
+
     def unpack_current(self) -> None:
         self._capture()
         if self.info is None:
@@ -603,7 +677,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _set_busy(self, busy: bool) -> None:
         self.busy = busy
-        for b in (self.commit_btn, self.release_btn, self.unpack_btn):
+        for b in (self.commit_btn, self.release_btn, self.unpack_btn, self.clear_btn):
             b.set_sensitive(not busy)
         self.spinner.set_spinning(busy)
 

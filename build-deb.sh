@@ -8,6 +8,7 @@ PKG=simple-git-push
 ROOT=build/${PKG}_${VERSION}
 OUT=dist/${PKG}_${VERSION}_all.deb
 APPID=org.simplegitpush.SimpleGitPush
+REPO_URL=$(python3 -c "import re;print(re.search(r'REPO_URL = \"(.+?)\"', open('simple_git_push/__init__.py').read()).group(1))")
 
 rm -rf "$ROOT"
 mkdir -p "$ROOT/DEBIAN" "$ROOT/usr/bin" "$ROOT/usr/lib/$PKG/simple_git_push" \
@@ -37,7 +38,7 @@ Depends: python3 (>= 3.11), python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1, git
 Recommends: gh
 Installed-Size: $SIZE
 Maintainer: Simple Git Push contributors <noreply@example.com>
-Homepage: https://github.com/owner/simple-git-push
+Homepage: $REPO_URL
 Description: Unpack a zip, commit, push and create a GitHub release
  Simple Git Push imports a zip file with source code, readme, release notes
  and a .deb, unpacks it into a development folder, commits and pushes it,

@@ -12,7 +12,8 @@ steps for you.
 
 ## What it does
 
-1. **Import**: drop a `.zip` on the window or use **Open file**.
+1. **Import**: drop a `.zip` on the window or use **Open file**. **Clear** removes the loaded zip and empties
+   the commit message (for `auto-generated` and `custom`) and the release fields. It never touches files on disk.
 2. **Unpack**: the files go into your development folder. If files already exist and differ, you are asked
    whether to replace them or keep the existing ones. Identical files are left alone.
 3. **Commit and push**: the commit message comes from the **Commit type**:
@@ -31,7 +32,10 @@ steps for you.
 
 Save several projects (name, development folder, repository, commit type and options) and switch between
 them with the **Project** dropdown. Use **+** to add one and the trash button to remove one (only the saved
-settings are removed, never your files). Settings are stored in `~/.config/simple-git-push/settings.json`.
+settings are removed, never your files).
+
+The project name, development folder and repository are locked. Press the **pencil** to change them and the
+**check mark** to save and lock them again. A new project opens in edit mode. Settings are stored in `~/.config/simple-git-push/settings.json`.
 
 ## How the version and release fields are found
 
@@ -50,7 +54,7 @@ By default `.deb` files are kept out of the git commit and are uploaded with the
 Requires Ubuntu 26.04 (or any recent GNOME desktop) with GTK 4 and libadwaita.
 
 ```bash
-sudo apt install ./simple-git-push_1.2.0_all.deb
+sudo apt install ./simple-git-push_1.2.1_all.deb
 sudo apt install gh        # for releases
 gh auth login              # once
 ```
@@ -66,7 +70,7 @@ Start **Simple Git Push** from the application menu. You can also right-click a 
 ./build-deb.sh
 ```
 
-This creates `dist/simple-git-push_1.2.0_all.deb`.
+This creates `dist/simple-git-push_1.2.1_all.deb`.
 
 ## Run from source
 
@@ -75,6 +79,11 @@ sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 git gh
 python3 -m simple_git_push [files.zip]
 python3 -m unittest discover -s tests -v
 ```
+
+## About
+
+The **info** button in the title bar shows the version, the repository link, the license (MIT) and credits.
+Set your own repository address in `simple_git_push/__init__.py` (`REPO_URL`) before building.
 
 ## Notes
 

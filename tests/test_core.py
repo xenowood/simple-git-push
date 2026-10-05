@@ -205,6 +205,15 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual((len(projects), idx), (1, 0))
 
 
+class MetaTests(unittest.TestCase):
+    def test_about_constants(self):
+        import simple_git_push as pkg
+        self.assertEqual(pkg.LICENSE_NAME, "MIT")
+        self.assertIsNotNone(core.parse_github_repo(pkg.REPO_URL))
+        self.assertTrue(pkg.ISSUES_URL.startswith(pkg.REPO_URL))
+        self.assertRegex(pkg.__version__, r"^\d+\.\d+\.\d+$")
+
+
 class HelperTests(unittest.TestCase):
     def test_message(self):
         self.assertEqual(core.build_message("stable-release"), "stable-release")

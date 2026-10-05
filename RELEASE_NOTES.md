@@ -1,3 +1,12 @@
+## v1.2.1
+
+- New **About** button (info icon in the title bar) with version, repository link, issue link,
+  license (MIT) and credits.
+- Projects are locked. The **pencil** button next to add and delete unlocks the project name, folder and
+  repository for editing, and the check mark saves and locks them again.
+- New **Clear** button next to the zip buttons: removes the loaded zip, empties the commit message and the
+  release fields, and switches off pre-release and overwrite. Files on disk are not touched.
+
 ## v1.2.0
 
 - New commit type `auto-generated`: the commit message is made from the name of the patch file in the
