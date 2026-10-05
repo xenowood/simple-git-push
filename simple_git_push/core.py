@@ -14,6 +14,7 @@ import stat
 import subprocess
 import zipfile
 import zlib
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Callable, Optional
@@ -220,6 +221,12 @@ class ZipInfo:
     readme: Optional[str] = None
     patch_files: list[str] = field(default_factory=list)
     stripped_prefix: str = ""
+    kind: str = "zip"             # "zip" or "folder"
+    root: Optional[Path] = None   # folder imports: the folder the files are read from
+
+    @property
+    def source_label(self) -> str:
+        return "folder" if self.kind == "folder" else "zip"
 
     @property
     def file_count(self) -> int:
@@ -259,6 +266,51 @@ class ZipInfo:
 
 def _is_junk(name: str) -> bool:
     return any(part in _JUNK_PARTS for part in PurePosixPath(name).parts)
+
+
+def _populate(info: ZipInfo, name_stem: str, read_text: Callable[..., str]) -> None:
+    """Find version, notes, asset, patch files and title. Shared by zip and folder imports."""
+    rels = [e.rel for e in info.entries if not e.is_dir]
+    by_depth = lambda p: (p.count("/"), p.lower())  # noqa: E731
+    info.patch_files = sorted(
+        (r for r in rels if r.lower().endswith((".patch", ".diff"))), key=by_depth)
+    info.deb_files = sorted((r for r in rels if r.lower().endswith(".deb")), key=by_depth)
+
+    for r in sorted(rels, key=by_depth):
+        base = PurePosixPath(r).name.lower()
+        if info.readme is None and base.startswith("readme"):
+            info.readme = r
+        if info.notes_file is None and base.startswith(_NOTES_NAMES):
+            info.notes_file = r
+
+    # Version: VERSION file > .deb name > source name > notes heading
+    version = None
+    for r in rels:
+        if r.upper() in ("VERSION", "VERSION.TXT"):
+            text = read_text(r).strip()
+            version = find_version(text.splitlines()[0]) if text else None
+            break
+    if not version and info.deb_files:
+        m = re.search(r"_(\d[^_]*)_", PurePosixPath(info.deb_files[0]).name)
+        version = find_version(m.group(1)) if m else find_version(info.deb_files[0])
+    if not version:
+        version = find_version(name_stem)
+    if not version and info.notes_file:
+        for line in read_text(info.notes_file).splitlines()[:25]:
+            if line.lstrip().startswith("#"):
+                version = find_version(line)
+                if version:
+                    break
+    info.version = version
+
+    # Title base: README heading > source name
+    if info.readme:
+        for line in read_text(info.readme).splitlines()[:15]:
+            if line.startswith("# "):
+                info.title_base = _clean_title(line[2:])
+                break
+    if not info.title_base or len(info.title_base) > 40:
+        info.title_base = _pretty_name(name_stem)
 
 
 def analyze_zip(path: str | Path) -> ZipInfo:
@@ -305,51 +357,108 @@ def analyze_zip(path: str | Path) -> ZipInfo:
                       (zi.external_attr >> 16) & 0xFFFF)
             )
 
-        rels = [e.rel for e in info.entries if not e.is_dir]
-        by_depth = lambda p: (p.count("/"), p.lower())  # noqa: E731
-        info.patch_files = sorted(
-            (r for r in rels if r.lower().endswith((".patch", ".diff"))), key=by_depth)
-        info.deb_files = sorted((r for r in rels if r.lower().endswith(".deb")), key=by_depth)
-
-        for r in sorted(rels, key=by_depth):
-            base = PurePosixPath(r).name.lower()
-            if info.readme is None and base.startswith("readme"):
-                info.readme = r
-            if info.notes_file is None and base.startswith(_NOTES_NAMES):
-                info.notes_file = r
-
         def read_text(rel: str, limit: int = 8192) -> str:
             entry = next(e for e in info.entries if e.rel == rel)
             return zf.read(entry.zip_name)[:limit].decode("utf-8", "ignore")
 
-        # Version: VERSION file > .deb name > zip name > notes heading
-        version = None
-        for r in rels:
-            if r.upper() in ("VERSION", "VERSION.TXT"):
-                version = find_version(read_text(r).strip().splitlines()[0]) if read_text(r).strip() else None
-                break
-        if not version and info.deb_files:
-            m = re.search(r"_(\d[^_]*)_", PurePosixPath(info.deb_files[0]).name)
-            version = find_version(m.group(1)) if m else find_version(info.deb_files[0])
-        if not version:
-            version = find_version(path.stem)
-        if not version and info.notes_file:
-            for line in read_text(info.notes_file).splitlines()[:25]:
-                if line.lstrip().startswith("#"):
-                    version = find_version(line)
-                    if version:
-                        break
-        info.version = version
-
-        # Title base: README heading > zip name
-        if info.readme:
-            for line in read_text(info.readme).splitlines()[:15]:
-                if line.startswith("# "):
-                    info.title_base = _clean_title(line[2:])
-                    break
-        if not info.title_base or len(info.title_base) > 40:
-            info.title_base = _pretty_name(path.stem)
+        _populate(info, path.stem, read_text)
     return info
+
+
+MAX_FOLDER_FILES = 20000
+
+
+def analyze_folder(path: str | Path, max_files: int = MAX_FOLDER_FILES) -> ZipInfo:
+    """Read a folder like a zip. A single top-level folder is entered, .git and symlinks are skipped."""
+    path = Path(path)
+    if not path.is_dir():
+        raise ZipError(f"Not a folder: {path}")
+    root = path
+    try:
+        kids = [c for c in sorted(root.iterdir()) if c.name not in _JUNK_PARTS and c.name != ".git"]
+        prefix = ""
+        if len(kids) == 1 and kids[0].is_dir() and not kids[0].is_symlink():
+            root = kids[0]
+            prefix = root.name
+
+        info = ZipInfo(path=path, stripped_prefix=prefix, kind="folder", root=root)
+        count = 0
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            dirnames[:] = sorted(d for d in dirnames if d != ".git" and d not in _JUNK_PARTS)
+            base = Path(dirpath)
+            for d in list(dirnames):
+                dp = base / d
+                if dp.is_symlink():
+                    dirnames.remove(d)
+                    continue
+                info.entries.append(Entry(str(dp), dp.relative_to(root).as_posix(), True, 0, 0, 0o755))
+            for f in sorted(filenames):
+                fp = base / f
+                if f in _JUNK_PARTS or fp.is_symlink() or not fp.is_file():
+                    continue
+                count += 1
+                if count > max_files:
+                    raise ZipError(f"That folder has more than {max_files} files. Pick the project folder itself.")
+                st = fp.stat()
+                info.entries.append(Entry(str(fp), fp.relative_to(root).as_posix(), False,
+                                          st.st_size, _crc_of(fp), st.st_mode & 0o777))
+    except OSError as exc:
+        raise ZipError(f"Couldn't read {path.name}: {exc}") from exc
+
+    if count == 0:
+        raise ZipError("The folder contains no files.")
+
+    def read_text(rel: str, limit: int = 8192) -> str:
+        with open(root / rel, "rb") as fh:
+            return fh.read(limit).decode("utf-8", "ignore")
+
+    _populate(info, path.name, read_text)
+    return info
+
+
+def analyze_source(path: str | Path) -> ZipInfo:
+    """A folder is imported as a folder, anything else as a zip."""
+    return analyze_folder(path) if Path(path).is_dir() else analyze_zip(path)
+
+
+def same_location(info: ZipInfo, dev: Path) -> bool:
+    """True when a folder import points at the development folder itself."""
+    return info.kind == "folder" and info.root is not None and info.root.resolve() == dev.resolve()
+
+
+def inside_source(info: ZipInfo, dev: Path) -> bool:
+    """True when the development folder lies inside the folder being imported."""
+    if info.kind != "folder" or info.root is None:
+        return False
+    src, target = info.root.resolve(), dev.resolve()
+    return target != src and src in target.parents
+
+
+# --------------------------------------------------------------------------
+# License text (shown in the About dialog, must match the LICENSE file)
+# --------------------------------------------------------------------------
+_MIT_BODY = """Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+"""
+
+
+def license_text(holder: str, year: str) -> str:
+    return f"MIT License\n\nCopyright (c) {year} {holder}\n\n{_MIT_BODY}"
 
 
 # --------------------------------------------------------------------------
@@ -403,11 +512,11 @@ def plan_unpack(info: ZipInfo, dev: Path) -> tuple[list[str], int]:
 
 def unpack(info: ZipInfo, dev: Path, overwrite: bool,
            log: Callable[[str, str], None] = lambda k, t: None) -> tuple[int, int]:
-    """Unpack into *dev*. Returns (written, skipped)."""
+    """Unpack a zip, or copy a folder, into *dev*. Returns (written, skipped)."""
     dev.mkdir(parents=True, exist_ok=True)
     root = dev.resolve()
     written = skipped = 0
-    with zipfile.ZipFile(info.path) as zf:
+    with (zipfile.ZipFile(info.path) if info.kind == "zip" else nullcontext()) as zf:
         for e in info.entries:
             target = (dev / e.rel)
             if root not in target.resolve().parents and target.resolve() != root:
@@ -440,8 +549,11 @@ def unpack(info: ZipInfo, dev: Path, overwrite: bool,
                 else:
                     target.unlink()
             target.parent.mkdir(parents=True, exist_ok=True)
-            with zf.open(e.zip_name) as src, open(target, "wb") as dst:
-                shutil.copyfileobj(src, dst)
+            if zf is not None:
+                with zf.open(e.zip_name) as src, open(target, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+            else:
+                shutil.copyfile(info.root / e.rel, target)
             if e.mode & 0o111:
                 target.chmod(target.stat().st_mode | (e.mode & 0o111))
             written += 1

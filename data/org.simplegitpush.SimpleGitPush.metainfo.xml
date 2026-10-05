@@ -6,11 +6,13 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
   <description>
-    <p>Simple Git Push takes a zip file with source code, readme, release notes and a build, unpacks it into your development folder, commits and pushes it, and creates a GitHub release with the .deb package.</p>
+    <p>Simple Git Push takes a zip file or folder with source code, readme, release notes and a build, unpacks it into your development folder, commits and pushes it, and creates a GitHub release with the .deb package.</p>
   </description>
+  <url type="homepage">https://github.com/xenowood/simple-git-push</url>
   <launchable type="desktop-id">org.simplegitpush.SimpleGitPush.desktop</launchable>
   <provides><binary>simple-git-push</binary></provides>
   <releases>
+    <release version="1.2.2" date="2026-10-05"/>
     <release version="1.2.1" date="2026-10-05"/>
     <release version="1.2.0" date="2026-10-05"/>
     <release version="1.1.1" date="2026-10-05"/>

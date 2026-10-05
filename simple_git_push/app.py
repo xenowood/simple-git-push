@@ -14,7 +14,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
-from . import APP_ID, APP_NAME, COPYRIGHT, ISSUES_URL, REPO_URL, __version__, core  # noqa: E402
+from . import (APP_ID, APP_NAME, COPYRIGHT, COPYRIGHT_HOLDER, COPYRIGHT_YEAR,  # noqa: E402
+               REPO_URL, __version__, core)
 
 CSS = """
 .dropzone { border: 2px dashed alpha(currentColor, 0.35); border-radius: 12px; padding: 18px; }
@@ -68,6 +69,62 @@ class AutoRow:
         return self.row.get_text().strip()
 
 
+class AboutDialog(Adw.Dialog):
+    """About and License tabs, same layout as the author's File Library app."""
+
+    def __init__(self) -> None:
+        super().__init__(title=f"About {APP_NAME}", content_width=440)
+        stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
+        stack.add_titled(self._about_page(), "about", "About")
+        stack.add_titled(self._license_page(), "license", "License")
+        switcher = Gtk.StackSwitcher(stack=stack, halign=Gtk.Align.CENTER,
+                                     margin_top=12, margin_start=20, margin_end=20)
+        close = Gtk.Button(label="Close", halign=Gtk.Align.END,
+                           margin_top=6, margin_bottom=16, margin_end=16)
+        close.connect("clicked", lambda *_: self.close())
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        body.append(switcher)
+        body.append(stack)
+        body.append(close)
+        stack.set_vexpand(True)
+
+        header = Adw.HeaderBar()
+        header.set_title_widget(Adw.WindowTitle(title=f"About {APP_NAME}", subtitle=""))
+        view = Adw.ToolbarView()
+        view.add_top_bar(header)
+        view.set_content(body)
+        self.set_child(view)
+
+    @staticmethod
+    def _about_page() -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, halign=Gtk.Align.CENTER,
+                      margin_top=18, margin_bottom=12, margin_start=24, margin_end=24)
+        icon = Gtk.Image(icon_name="simple-git-push", pixel_size=96, margin_bottom=8)
+        name = Gtk.Label(label=APP_NAME)
+        name.add_css_class("title-1")
+        version = Gtk.Label(label=f"Version {__version__}")
+        version.add_css_class("dim-label")
+        desc = Gtk.Label(label="Unpack a zip or folder, commit, push and create a GitHub release from one window.",
+                         wrap=True, justify=Gtk.Justification.CENTER, max_width_chars=40, margin_top=10)
+        link = Gtk.LinkButton(uri=REPO_URL, label=REPO_URL.replace("https://", ""), margin_top=6)
+        copyright_ = Gtk.Label(label=f"Copyright {COPYRIGHT}", margin_top=14)
+        lic = Gtk.Label(label="Released under the MIT License.\nThis program comes with absolutely no warranty.",
+                        justify=Gtk.Justification.CENTER, margin_top=2)
+        lic.add_css_class("dim-label")
+        for w in (icon, name, version, desc, link, copyright_, lic):
+            box.append(w)
+        return box
+
+    @staticmethod
+    def _license_page() -> Gtk.Widget:
+        text = Gtk.Label(label=core.license_text(COPYRIGHT_HOLDER, COPYRIGHT_YEAR), wrap=True, xalign=0,
+                         selectable=True, margin_top=14, margin_bottom=8, margin_start=24, margin_end=24)
+        text.add_css_class("caption")
+        sw = Gtk.ScrolledWindow(vexpand=True, min_content_height=300, child=text)
+        sw.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        return sw
+
+
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application, preload: Optional[str] = None):
         super().__init__(application=app, title=APP_NAME)
@@ -95,7 +152,7 @@ class MainWindow(Adw.ApplicationWindow):
             path = shutil.which(tool)
             self.log("info", f"{tool}: {path or 'not found'}")
         if preload:
-            GLib.idle_add(self.load_zip, preload)
+            GLib.idle_add(self.load_source, preload)
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
@@ -139,19 +196,24 @@ class MainWindow(Adw.ApplicationWindow):
         box.add_css_class("dropzone")
         icon = Gtk.Image(icon_name="folder-download-symbolic", pixel_size=40)
         icon.add_css_class("dim-label")
-        title = Gtk.Label(label="Drop a .zip here")
+        title = Gtk.Label(label="Drop a .zip or a folder here")
         title.add_css_class("title-4")
-        self.zip_status = Gtk.Label(label="No zip loaded yet", wrap=True, justify=Gtk.Justification.CENTER)
+        self.zip_status = Gtk.Label(label="Nothing loaded yet", wrap=True, justify=Gtk.Justification.CENTER)
         self.zip_status.add_css_class("dim-label")
         buttons = Gtk.Box(spacing=8, halign=Gtk.Align.CENTER, margin_top=6)
-        open_btn = Gtk.Button(label="Open file…")
+        open_btn = Gtk.Button(label="Open file…", icon_name="document-open-symbolic",
+                              tooltip_text="Open a zip file")
         open_btn.connect("clicked", lambda *_: self.choose_zip())
+        folder_btn = Gtk.Button(label="Import from folder…", icon_name="folder-open-symbolic",
+                                tooltip_text="Copy the files of a folder into the development folder")
+        folder_btn.connect("clicked", lambda *_: self.choose_source_folder())
         self.unpack_btn = Gtk.Button(label="Unpack again")
         self.unpack_btn.connect("clicked", lambda *_: self.unpack_current())
         self.clear_btn = Gtk.Button(label="Clear", icon_name="edit-clear-all-symbolic",
-                                    tooltip_text="Remove the loaded zip and clear the commit and release fields")
+                                    tooltip_text="Remove the loaded zip or folder and clear the commit and release fields")
         self.clear_btn.connect("clicked", lambda *_: self.clear_zip())
         buttons.append(open_btn)
+        buttons.append(folder_btn)
         buttons.append(self.unpack_btn)
         buttons.append(self.clear_btn)
         for w in (icon, title, self.zip_status, buttons):
@@ -470,8 +532,19 @@ class MainWindow(Adw.ApplicationWindow):
                 f = dlg.open_finish(res)
             except GLib.Error:
                 return
-            self.load_zip(f.get_path())
+            self.load_source(f.get_path())
         dialog.open(self, None, done)
+
+    def choose_source_folder(self) -> None:
+        dialog = Gtk.FileDialog(title="Import from folder")
+
+        def done(dlg, res):
+            try:
+                f = dlg.select_folder_finish(res)
+            except GLib.Error:
+                return
+            self.load_source(f.get_path())
+        dialog.select_folder(self, None, done)
 
     def choose_folder(self) -> None:
         dialog = Gtk.FileDialog(title="Choose the development folder")
@@ -517,24 +590,28 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_drop(self, _t, value, _x, _y) -> bool:
         for f in value.get_files():
             path = f.get_path()
-            if path and path.lower().endswith(".zip"):
-                self.load_zip(path)
+            if path and (os.path.isdir(path) or path.lower().endswith(".zip")):
+                self.load_source(path)
                 return True
-        self.toast("Drop a .zip file")
+        self.toast("Drop a .zip file or a folder")
         return False
 
-    # -------------------------------------------------------------- zip
-    def load_zip(self, path: str) -> bool:
+    # ----------------------------------------------------- zip or folder
+    def load_source(self, path: str) -> bool:
         try:
-            info = core.analyze_zip(path)
+            info = core.analyze_source(path)
         except core.ZipError as exc:
             self.log("err", str(exc))
-            self.toast("Couldn't read that zip file")
+            self.toast("Couldn't read that zip or folder")
             return False
+        kind = info.source_label
+        name = Path(path).name or path
         self.info = info
         self._refresh_message()
-        self.log("info", f"Loaded {Path(path).name}: {info.file_count} files, "
+        self.log("info", f"Loaded {kind} {name}: {info.file_count} files, "
                          f"version {info.version or 'unknown'}")
+        if info.stripped_prefix and kind == "folder":
+            self.log("info", f"Using the folder inside: {info.stripped_prefix}")
         self.tag_row.set_auto(info.tag, force=True)
         self.title_row.set_auto(info.title, force=True)
         self.notes_row.set_auto(info.notes_file or "", force=True)
@@ -542,20 +619,25 @@ class MainWindow(Adw.ApplicationWindow):
         if len(info.deb_files) > 1:
             self.log("info", "Several .deb files found: " + ", ".join(info.deb_files))
         if not info.version:
-            self.log("err", "No version found in the zip. Enter the tag in the release section.")
+            self.log("err", f"No version found in the {kind}. Enter the tag in the release section.")
         if self._ctype() == "auto-generated":
             self.log("info", f"Auto-generated commit message from {info.message_source}: {info.auto_message}")
-        summary = f"{Path(path).name}\n{info.file_count} files"
+        first = self._tilde(str(Path(path))) if kind == "folder" else name
+        summary = f"{first}\n{info.file_count} files"
         if info.version:
             summary += f" · version {info.version}"
+        if kind == "folder" and info.root is not None and (info.root / ".git").exists():
+            summary += " · .git skipped"
         self.zip_status.set_text(summary)
+        self.unpack_btn.set_label("Copy again" if kind == "folder" else "Unpack again")
         self.unpack_current()
         return False
 
     def clear_zip(self) -> None:
-        """Forget the loaded zip and empty the commit and release fields. Files on disk stay as they are."""
+        """Forget the loaded zip or folder and empty the commit and release fields. Files on disk stay as they are."""
         self.info = None
-        self.zip_status.set_text("No zip loaded yet")
+        self.zip_status.set_text("Nothing loaded yet")
+        self.unpack_btn.set_label("Unpack again")
         if self._ctype() == "custom":
             self.msg_row.set_text("")
         else:
@@ -564,33 +646,30 @@ class MainWindow(Adw.ApplicationWindow):
             row.set_auto("", force=True)
         self.pre_row.set_active(False)
         self.over_row.set_active(False)
-        self.log("info", "Cleared the loaded zip and the commit and release fields.")
+        self.log("info", "Cleared the loaded zip or folder and the commit and release fields.")
 
     def show_about(self) -> None:
-        dialog = Adw.AboutDialog(
-            application_name=APP_NAME,
-            application_icon="simple-git-push",
-            version=__version__,
-            developer_name="Simple Git Push contributors",
-            comments="Unpack a zip, commit, push and create a GitHub release from one window.",
-            website=REPO_URL,
-            issue_url=ISSUES_URL,
-            license_type=Gtk.License.MIT_X11,
-            copyright=COPYRIGHT,
-        )
-        dialog.add_acknowledgement_section("Made with", ["Claude (claude.ai)"])
-        dialog.present(self)
+        AboutDialog().present(self)
 
     def unpack_current(self) -> None:
         self._capture()
         if self.info is None:
-            self.toast("Load a zip file first")
+            self.toast("Load a zip or folder first")
             return
         dev_text = self.dev_row.get_text().strip()
         if not dev_text:
             self.toast("Set the development folder first")
             return
         dev = core.expand(dev_text)
+        if core.same_location(self.info, dev):
+            self.log("info", "That's already your development folder. Nothing to copy.")
+            self.toast("That's already your development folder")
+            return
+        if core.inside_source(self.info, dev):
+            self.log("err", "The development folder is inside the folder you are importing. "
+                            "Choose a different folder.")
+            self.toast("The development folder is inside the import folder")
+            return
         try:
             conflicts, same = core.plan_unpack(self.info, dev)
         except OSError as exc:
@@ -616,7 +695,7 @@ class MainWindow(Adw.ApplicationWindow):
             if response in ("overwrite", "skip"):
                 self._start_unpack(dev, response == "overwrite")
             else:
-                self.log("info", "Unpack cancelled.")
+                self.log("info", "Import cancelled.")
         dialog.connect("response", answered)
         dialog.present(self)
 
@@ -624,9 +703,11 @@ class MainWindow(Adw.ApplicationWindow):
         info = self.info
 
         def work(runner: core.Runner) -> bool:
-            self.log("info", f"Unpacking {info.file_count} files into {dev}")
+            copying = info.kind == "folder"
+            self.log("info", f"{'Copying' if copying else 'Unpacking'} {info.file_count} files into {dev}")
             written, skipped = core.unpack(info, dev, overwrite, self.log)
-            self.log("info", f"Unpacked: {written} written, {skipped} left as they were.")
+            self.log("info", f"{'Copied' if copying else 'Unpacked'}: {written} written, "
+                             f"{skipped} left as they were.")
             return True
         self._run_bg(work)
 
@@ -638,7 +719,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.toast("Enter the development folder and repository first")
             return
         if not self.msg_row.get_text().strip():
-            self.toast("Load a zip first, or enter a commit message"
+            self.toast("Load a zip or folder first, or enter a commit message"
                        if self._ctype() == "auto-generated" else "Enter a commit message first")
             return
         message = self.msg_row.get_text().strip()
@@ -698,6 +779,7 @@ class App(Adw.Application):
 
 
 def main() -> int:
-    preload = next((a for a in sys.argv[1:] if a.lower().endswith(".zip") and os.path.isfile(a)), None)
+    preload = next((a for a in sys.argv[1:]
+                    if (a.lower().endswith(".zip") and os.path.isfile(a)) or os.path.isdir(a)), None)
     GLib.set_application_name(APP_NAME)
     return App(preload).run([sys.argv[0]])

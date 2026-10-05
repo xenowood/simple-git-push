@@ -1,3 +1,12 @@
+## v1.2.2
+
+- New **Import from folder** button next to **Open file**. A folder is read like a zip and its files are
+  copied into the development folder, with the same overwrite question. You can also drop a folder on the window.
+- Folder imports skip `.git` and symbolic links, never change the source, and refuse a development folder that
+  lies inside the source folder. Picking the development folder itself only reads the version and release fields.
+- New About dialog with **About** and **License** tabs. The "Report an issue" link is gone.
+- Repository link, copyright and `LICENSE` now name xenowood.
+
 ## v1.2.1
 
 - New **About** button (info icon in the title bar) with version, repository link, issue link,

@@ -11,7 +11,7 @@ assistant made by Anthropic.
 
 ## How it was tested
 
-- `tests/test_core.py` covers zip analysis, version detection, safe unpacking and overwrite handling,
+- `tests/test_core.py` covers zip and folder analysis, version detection, safe unpacking and copying with overwrite handling,
   stored projects, commit and push against a real local bare git repository, and the
   `gh release create` arguments (using a fake `gh`).
 - Run them with: `python3 -m unittest discover -s tests -v`

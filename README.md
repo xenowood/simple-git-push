@@ -12,9 +12,9 @@ steps for you.
 
 ## What it does
 
-1. **Import**: drop a `.zip` on the window or use **Open file**. **Clear** removes the loaded zip and empties
+1. **Import**: drop a `.zip` or a folder on the window, or use **Open file** or **Import from folder**. **Clear** removes the loaded zip and empties
    the commit message (for `auto-generated` and `custom`) and the release fields. It never touches files on disk.
-2. **Unpack**: the files go into your development folder. If files already exist and differ, you are asked
+2. **Unpack or copy**: the files go into your development folder. If files already exist and differ, you are asked
    whether to replace them or keep the existing ones. Identical files are left alone.
 3. **Commit and push**: the commit message comes from the **Commit type**:
    - `stable-release` or `beta-release`: the message is that text.
@@ -54,7 +54,7 @@ By default `.deb` files are kept out of the git commit and are uploaded with the
 Requires Ubuntu 26.04 (or any recent GNOME desktop) with GTK 4 and libadwaita.
 
 ```bash
-sudo apt install ./simple-git-push_1.2.1_all.deb
+sudo apt install ./simple-git-push_1.2.2_all.deb
 sudo apt install gh        # for releases
 gh auth login              # once
 ```
@@ -70,7 +70,7 @@ Start **Simple Git Push** from the application menu. You can also right-click a 
 ./build-deb.sh
 ```
 
-This creates `dist/simple-git-push_1.2.1_all.deb`.
+This creates `dist/simple-git-push_1.2.2_all.deb`.
 
 ## Run from source
 
@@ -80,9 +80,21 @@ python3 -m simple_git_push [files.zip]
 python3 -m unittest discover -s tests -v
 ```
 
+## Importing a folder
+
+**Import from folder** reads a folder the same way as a zip (version, tag, release title, release notes, `.deb`,
+patch file) and copies its files into the development folder, with the same question before anything is replaced.
+
+- A `.git` folder inside the source and symbolic links are skipped. The source folder is only read, never changed.
+- If the folder contains just one folder, that one is used, like an unzipped archive.
+- If you pick the development folder itself, there is nothing to copy. The version and release fields are still read.
+- If the development folder is inside the folder you import, the import is refused.
+- You can also start the app with a folder: `simple-git-push ~/Downloads/my-folder`.
+
 ## About
 
-The **info** button in the title bar shows the version, the repository link, the license (MIT) and credits.
+The **info** button in the title bar opens the About dialog with an **About** tab (version, repository link,
+copyright, license) and a **License** tab with the full MIT text.
 Set your own repository address in `simple_git_push/__init__.py` (`REPO_URL`) before building.
 
 ## Notes

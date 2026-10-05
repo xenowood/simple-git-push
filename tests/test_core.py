@@ -157,6 +157,94 @@ class AutoMessageTests(unittest.TestCase):
         self.assertEqual(git(remote, "log", "-1", "--format=%s").strip(), "Fix crash")
 
 
+def make_folder(root: Path, files: dict) -> Path:
+    for name, data in files.items():
+        p = root / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(data)
+        if name.endswith(".sh"):
+            p.chmod(0o755)
+    return root
+
+
+class FolderImportTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.src = make_folder(self.tmp / "simple-git-push-1.2.2", SAMPLE)
+
+    def test_analyze_folder_like_zip(self):
+        info = core.analyze_source(self.src)
+        self.assertEqual(info.kind, "folder")
+        self.assertEqual(info.source_label, "folder")
+        self.assertEqual(info.version, "1.0.1")      # from the .deb name, like a zip
+        self.assertEqual(info.tag, "v1.0.1")
+        self.assertEqual(info.notes_file, "RELEASE_NOTES.md")
+        self.assertEqual(info.asset, "dist/simple-git-push_1.0.1_all.deb")
+        self.assertEqual(info.file_count, 6)
+
+    def test_zip_still_goes_through_analyze_source(self):
+        z = make_zip(self.tmp / "f.zip", SAMPLE)
+        self.assertEqual(core.analyze_source(z).kind, "zip")
+
+    def test_skips_git_and_symlinks(self):
+        (self.src / ".git").mkdir()
+        (self.src / ".git" / "config").write_text("x")
+        os.symlink("/etc/passwd", self.src / "link.txt")
+        os.symlink("/etc", self.src / "linkdir")
+        rels = [e.rel for e in core.analyze_folder(self.src).entries]
+        self.assertFalse(any(r.startswith(".git") for r in rels))
+        self.assertNotIn("link.txt", rels)
+        self.assertFalse(any(r.startswith("linkdir") for r in rels))
+
+    def test_enters_single_top_folder(self):
+        outer = self.tmp / "outer"
+        make_folder(outer / "proj", SAMPLE)
+        info = core.analyze_folder(outer)
+        self.assertEqual(info.stripped_prefix, "proj")
+        self.assertIn("src/app.py", [e.rel for e in info.entries])
+
+    def test_empty_and_missing_folder(self):
+        empty = self.tmp / "empty"
+        empty.mkdir()
+        with self.assertRaises(core.ZipError):
+            core.analyze_folder(empty)
+        with self.assertRaises(core.ZipError):
+            core.analyze_folder(self.tmp / "nope")
+
+    def test_copy_conflicts_and_modes(self):
+        info = core.analyze_folder(self.src)
+        dev = self.tmp / "dev"
+        self.assertEqual(core.plan_unpack(info, dev), ([], 0))
+        written, _ = core.unpack(info, dev, True)
+        self.assertEqual(written, 6)
+        self.assertTrue(os.access(dev / "build.sh", os.X_OK))
+        self.assertTrue((self.src / "LICENSE").exists())          # the source is only read
+        self.assertEqual(core.plan_unpack(info, dev), ([], 6))
+        (dev / "LICENSE").write_text("changed")
+        self.assertEqual(core.plan_unpack(info, dev)[0], ["LICENSE"])
+        core.unpack(info, dev, False)
+        self.assertEqual((dev / "LICENSE").read_text(), "changed")
+        core.unpack(info, dev, True)
+        self.assertEqual((dev / "LICENSE").read_text(), "MIT")
+
+    def test_same_and_nested_location(self):
+        info = core.analyze_folder(self.src)
+        self.assertTrue(core.same_location(info, self.src))
+        self.assertFalse(core.same_location(info, self.tmp / "dev"))
+        self.assertTrue(core.inside_source(info, self.src / "sub"))
+        self.assertFalse(core.inside_source(info, self.src))
+        self.assertFalse(core.inside_source(info, self.tmp / "dev"))
+        self.assertFalse(core.inside_source(core.analyze_zip(make_zip(self.tmp / "z.zip", SAMPLE)), self.src))
+
+    def test_auto_message_from_folder_name_and_patch(self):
+        info = core.analyze_folder(make_folder(self.tmp / "fix-login-crash-v1.0.2", SAMPLE))
+        self.assertEqual(info.auto_message, "Fix login crash")
+        data = dict(SAMPLE)
+        data["patches/add-export.patch"] = "diff"
+        info = core.analyze_folder(make_folder(self.tmp / "p2", data))
+        self.assertEqual(info.auto_message, "Add export")
+
+
 class ProjectTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -210,8 +298,14 @@ class MetaTests(unittest.TestCase):
         import simple_git_push as pkg
         self.assertEqual(pkg.LICENSE_NAME, "MIT")
         self.assertIsNotNone(core.parse_github_repo(pkg.REPO_URL))
-        self.assertTrue(pkg.ISSUES_URL.startswith(pkg.REPO_URL))
         self.assertRegex(pkg.__version__, r"^\d+\.\d+\.\d+$")
+        self.assertIn(pkg.COPYRIGHT_HOLDER, pkg.COPYRIGHT)
+
+    def test_license_file_matches_app_text(self):
+        import simple_git_push as pkg
+        root = Path(__file__).resolve().parent.parent
+        want = core.license_text(pkg.COPYRIGHT_HOLDER, pkg.COPYRIGHT_YEAR)
+        self.assertEqual((root / "LICENSE").read_text(encoding="utf-8"), want)
 
 
 class HelperTests(unittest.TestCase):
