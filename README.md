@@ -15,9 +15,13 @@ steps for you.
 1. **Import**: drop a `.zip` on the window or use **Open file**.
 2. **Unpack**: the files go into your development folder. If files already exist and differ, you are asked
    whether to replace them or keep the existing ones. Identical files are left alone.
-3. **Commit and push**: the commit message is built as `vVERSION: TYPE`, for example
-   `v1.0.1: stable-release`. The version comes from the zip. Types are `stable-release`, `beta-release`
-   and `custom` (free text).
+3. **Commit and push**: the commit message comes from the **Commit type**:
+   - `stable-release` or `beta-release`: the message is that text.
+   - `auto-generated`: the message is made from the name of the `.patch` or `.diff` file in the zip,
+     for example `fix-login-crash_v1.2.patch` becomes `Fix login crash`. Names that do not start with a verb get
+     `Update` in front. Without a patch file, the zip file name is used, and if nothing readable is left the
+     message is `Update to vX.Y.Z`.
+   - `custom`: type your own message.
 4. **GitHub release**: runs `gh release create` with the tag, `--title`, `--notes-file` and the `.deb`,
    all filled from the zip. Every field can be overridden.
 5. **Output pane**: shows each command and its output, including errors. The text is selectable, and
@@ -46,7 +50,7 @@ By default `.deb` files are kept out of the git commit and are uploaded with the
 Requires Ubuntu 26.04 (or any recent GNOME desktop) with GTK 4 and libadwaita.
 
 ```bash
-sudo apt install ./simple-git-push_1.1.0_all.deb
+sudo apt install ./simple-git-push_1.2.0_all.deb
 sudo apt install gh        # for releases
 gh auth login              # once
 ```
@@ -62,7 +66,7 @@ Start **Simple Git Push** from the application menu. You can also right-click a 
 ./build-deb.sh
 ```
 
-This creates `dist/simple-git-push_1.1.0_all.deb`.
+This creates `dist/simple-git-push_1.2.0_all.deb`.
 
 ## Run from source
 

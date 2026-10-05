@@ -187,7 +187,6 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _build_commit(self) -> Gtk.Widget:
         g = Adw.PreferencesGroup(title="Commit and push")
-        self.version_row = Adw.EntryRow(title="Version (from zip)")
         self.type_row = Adw.ComboRow(title="Commit type",
                                      model=Gtk.StringList.new(list(core.COMMIT_TYPES)))
         self.msg_row = Adw.EntryRow(title="Commit message")
@@ -196,9 +195,8 @@ class MainWindow(Adw.ApplicationWindow):
             title="Keep .deb files out of the commit",
             subtitle="Release assets are uploaded with the release instead",
             active=True)
-        for w in (self.version_row, self.type_row, self.msg_row, self.push_row, self.nodeb_row):
+        for w in (self.type_row, self.msg_row, self.push_row, self.nodeb_row):
             g.add(w)
-        self.version_row.connect("changed", lambda *_: self._refresh_message())
         self.type_row.connect("notify::selected", self._on_type_changed)
 
         self.commit_btn = Gtk.Button(label="Commit and push", halign=Gtk.Align.END)
@@ -383,22 +381,18 @@ class MainWindow(Adw.ApplicationWindow):
         custom = self._ctype() == "custom"
         self.msg_row.set_editable(custom)
         if custom:
-            self.msg_row.set_text(core.build_message(self.version_row.get_text(), "stable-release")
-                                  .split(":")[0] + ": ")
+            self.msg_row.set_text("")
             self.msg_row.grab_focus()
-            self.msg_row.set_position(-1)
         else:
             self._refresh_message()
 
     def _refresh_message(self) -> None:
-        if self._ctype() != "custom":
-            self.msg_row.set_editable(False)
-            self.msg_row.set_text(core.build_message(self.version_row.get_text(), self._ctype()))
-        else:
-            self.msg_row.set_editable(True)
-            if not self.msg_row.get_text().strip():
-                v = self.version_row.get_text().strip()
-                self.msg_row.set_text(f"v{v}: " if v else "")
+        ctype = self._ctype()
+        self.msg_row.set_editable(ctype == "custom")
+        if ctype == "custom":
+            return
+        auto = self.info.auto_message if self.info else ""
+        self.msg_row.set_text(core.build_message(ctype, auto_text=auto))
 
     # --------------------------------------------------------------- log
     def log(self, kind: str, text: str) -> None:
@@ -493,9 +487,9 @@ class MainWindow(Adw.ApplicationWindow):
             self.toast("Couldn't read that zip file")
             return False
         self.info = info
+        self._refresh_message()
         self.log("info", f"Loaded {Path(path).name}: {info.file_count} files, "
                          f"version {info.version or 'unknown'}")
-        self.version_row.set_text(info.version or "")
         self.tag_row.set_auto(info.tag, force=True)
         self.title_row.set_auto(info.title, force=True)
         self.notes_row.set_auto(info.notes_file or "", force=True)
@@ -503,7 +497,9 @@ class MainWindow(Adw.ApplicationWindow):
         if len(info.deb_files) > 1:
             self.log("info", "Several .deb files found: " + ", ".join(info.deb_files))
         if not info.version:
-            self.log("err", "No version found in the zip. Enter it in the Version field.")
+            self.log("err", "No version found in the zip. Enter the tag in the release section.")
+        if self._ctype() == "auto-generated":
+            self.log("info", f"Auto-generated commit message from {info.message_source}: {info.auto_message}")
         summary = f"{Path(path).name}\n{info.file_count} files"
         if info.version:
             summary += f" · version {info.version}"
@@ -567,8 +563,9 @@ class MainWindow(Adw.ApplicationWindow):
         if not dev_text or not repo:
             self.toast("Enter the development folder and repository first")
             return
-        if self._ctype() != "custom" and not self.version_row.get_text().strip():
-            self.toast("Enter a version first")
+        if not self.msg_row.get_text().strip():
+            self.toast("Load a zip first, or enter a commit message"
+                       if self._ctype() == "auto-generated" else "Enter a commit message first")
             return
         message = self.msg_row.get_text().strip()
         push, exclude = self.push_row.get_active(), self.nodeb_row.get_active()

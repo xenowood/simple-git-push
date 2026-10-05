@@ -124,6 +124,39 @@ class ZipTests(unittest.TestCase):
         self.assertTrue((dev / "src" / "app.py").is_file())
 
 
+class AutoMessageTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def test_uses_patch_file_name(self):
+        data = dict(SAMPLE)
+        data["patches/fix-login-crash.patch"] = "diff"
+        info = core.analyze_zip(make_zip(self.tmp / "files.zip", data))
+        self.assertEqual(info.patch_files, ["patches/fix-login-crash.patch"])
+        self.assertEqual(info.auto_message, "Fix login crash")
+
+    def test_falls_back_to_zip_name(self):
+        info = core.analyze_zip(make_zip(self.tmp / "add-export-button-v1.4.0.zip", SAMPLE))
+        self.assertEqual(info.patch_files, [])
+        self.assertEqual(info.auto_message, "Add export button")
+
+    def test_generic_name_falls_back_to_version(self):
+        info = core.analyze_zip(make_zip(self.tmp / "files.zip", SAMPLE))
+        self.assertEqual(info.auto_message, "Update to v1.0.1")
+
+    def test_auto_message_is_committed(self):
+        info = core.analyze_zip(make_zip(self.tmp / "fix-crash.zip", SAMPLE))
+        remote = self.tmp / "r.git"
+        subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)], check=True, capture_output=True)
+        dev = self.tmp / "dev"
+        core.unpack(info, dev, True)
+        os.environ.update(GIT_AUTHOR_NAME="T", GIT_AUTHOR_EMAIL="t@e.x",
+                          GIT_COMMITTER_NAME="T", GIT_COMMITTER_EMAIL="t@e.x")
+        msg = core.build_message("auto-generated", auto_text=info.auto_message)
+        self.assertTrue(core.commit_and_push(core.Runner(Logger()), dev, str(remote), msg, True))
+        self.assertEqual(git(remote, "log", "-1", "--format=%s").strip(), "Fix crash")
+
+
 class ProjectTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -174,9 +207,26 @@ class ProjectTests(unittest.TestCase):
 
 class HelperTests(unittest.TestCase):
     def test_message(self):
-        self.assertEqual(core.build_message("1.0.1", "stable-release"), "v1.0.1: stable-release")
-        self.assertEqual(core.build_message("1.0.1", "beta-release"), "v1.0.1: beta-release")
-        self.assertEqual(core.build_message("1.0.1", "custom", " hi "), "hi")
+        self.assertEqual(core.build_message("stable-release"), "stable-release")
+        self.assertEqual(core.build_message("beta-release"), "beta-release")
+        self.assertEqual(core.build_message("stable-release", "ignored"), "stable-release")
+        self.assertEqual(core.build_message("custom", " hi "), "hi")
+        self.assertEqual(core.build_message("custom"), "")
+        self.assertEqual(core.build_message("auto-generated", "x", " Fix a bug "), "Fix a bug")
+        self.assertEqual(core.build_message("auto-generated"), "")
+
+    def test_message_from_name(self):
+        cases = {
+            "fix-login-crash_v1.2.3.patch": "Fix login crash",
+            "login-crash.diff": "Update login crash",
+            "0001-add-dark-mode.patch": "Add dark mode",
+            "dir/Update_readme.patch": "Update readme",
+            "bump-version-1.2.0-beta.patch": "Bump version",
+            "files.zip": "",
+            "v2.0.0.zip": "",
+        }
+        for name, want in cases.items():
+            self.assertEqual(core.message_from_name(name), want, name)
 
     def test_parse_repo(self):
         self.assertEqual(core.parse_github_repo("https://github.com/test/testrepo"), "test/testrepo")
@@ -204,9 +254,9 @@ class GitFlowTests(unittest.TestCase):
     def test_commit_push_excludes_deb(self):
         log = Logger()
         ok = core.commit_and_push(core.Runner(log), self.dev, str(self.remote),
-                                  "v1.0.1: stable-release", True, True)
+                                  "stable-release", True, True)
         self.assertTrue(ok, log.text())
-        self.assertEqual(git(self.remote, "log", "-1", "--format=%s").strip(), "v1.0.1: stable-release")
+        self.assertEqual(git(self.remote, "log", "-1", "--format=%s").strip(), "stable-release")
         files = git(self.remote, "ls-tree", "-r", "--name-only", "main")
         self.assertIn("src/app.py", files)
         self.assertNotIn(".deb", files)

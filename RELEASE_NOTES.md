@@ -1,3 +1,15 @@
+## v1.2.0
+
+- New commit type `auto-generated`: the commit message is made from the name of the patch file in the
+  zip (`.patch` or `.diff`), or from the zip file name if there is no patch file.
+
+## v1.1.1
+
+- The commit message is now just the commit type (`stable-release` or `beta-release`), without the
+  version. `custom` still lets you type your own text.
+- Removed the version field from the commit section. The release tag is set in the release section.
+- The app icon is scaled to 90% so it sits better in the app grid and the dock.
+
 ## v1.1.0
 
 - Added stored projects with a dropdown. Each project keeps its development folder, repository,

@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Callable, Optional
 
-COMMIT_TYPES = ("stable-release", "beta-release", "custom")
+COMMIT_TYPES = ("stable-release", "beta-release", "auto-generated", "custom")
 
 SETTINGS_PATH = (
     Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
@@ -129,12 +129,49 @@ def find_version(text: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
-def build_message(version: str, ctype: str, custom_text: str = "") -> str:
-    version = version.strip()
+_VERBS = {
+    "add", "fix", "update", "remove", "delete", "improve", "refactor", "rename", "change",
+    "bump", "revert", "merge", "move", "clean", "cleanup", "implement", "support", "enable",
+    "disable", "replace", "correct", "adjust", "allow", "use", "make", "drop", "document",
+}
+_GENERIC = {"patch", "diff", "files", "file", "source", "src", "code", "changes", "update", "new", "final"}
+
+
+def message_from_name(name: str) -> str:
+    """Turn a patch or zip file name into a short commit message.
+
+    fix-login-crash_v1.2.3.patch -> "Fix login crash"
+    login-crash.diff             -> "Update login crash"
+    """
+    stem = PurePosixPath(name).name
+    for ext in (".patch", ".diff", ".zip"):
+        if stem.lower().endswith(ext):
+            stem = stem[: -len(ext)]
+    stem = re.sub(r"(?i)(?:^|[-_. ])v?\d+(?:\.\d+)+(?:-[0-9A-Za-z.]+)?(?=$|[-_. ])", " ", stem)
+    stem = re.sub(r"^\d+[-_. ]+", "", stem)  # leading sequence numbers like 0001-
+    words = [w for w in re.split(r"[-_.\s]+", stem) if w]
+    if words and words[0].lower() in _GENERIC and words[0].lower() != "update":
+        words = words[1:]
+    while words and words[-1].lower() in ("patch", "diff", "files", "file"):
+        words.pop()
+    if not words:
+        return ""
+    text = " ".join(words).lower()
+    if words[0].lower() not in _VERBS:
+        text = "update " + text
+    return text[0].upper() + text[1:]
+
+
+def build_message(ctype: str, custom_text: str = "", auto_text: str = "") -> str:
+    """The commit message is the commit type itself.
+
+    'custom' uses the typed text, 'auto-generated' uses the text made from the patch file name.
+    """
     if ctype == "custom":
         return custom_text.strip()
-    prefix = f"v{version}" if version else ""
-    return f"{prefix}: {ctype}" if prefix else ctype
+    if ctype == "auto-generated":
+        return auto_text.strip()
+    return ctype
 
 
 def parse_github_repo(url: str) -> Optional[str]:
@@ -181,11 +218,24 @@ class ZipInfo:
     deb_files: list[str] = field(default_factory=list)
     notes_file: Optional[str] = None
     readme: Optional[str] = None
+    patch_files: list[str] = field(default_factory=list)
     stripped_prefix: str = ""
 
     @property
     def file_count(self) -> int:
         return sum(1 for e in self.entries if not e.is_dir)
+
+    @property
+    def message_source(self) -> str:
+        """The file name the auto-generated commit message is based on."""
+        return self.patch_files[0] if self.patch_files else self.path.name
+
+    @property
+    def auto_message(self) -> str:
+        msg = message_from_name(self.message_source)
+        if not msg and self.patch_files:
+            msg = message_from_name(self.path.name)
+        return msg or (f"Update to {self.tag}" if self.tag else "Update")
 
     @property
     def tag(self) -> str:
@@ -257,6 +307,8 @@ def analyze_zip(path: str | Path) -> ZipInfo:
 
         rels = [e.rel for e in info.entries if not e.is_dir]
         by_depth = lambda p: (p.count("/"), p.lower())  # noqa: E731
+        info.patch_files = sorted(
+            (r for r in rels if r.lower().endswith((".patch", ".diff"))), key=by_depth)
         info.deb_files = sorted((r for r in rels if r.lower().endswith(".deb")), key=by_depth)
 
         for r in sorted(rels, key=by_depth):
